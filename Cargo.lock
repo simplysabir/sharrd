@@ -844,7 +844,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "shard"
+name = "sharrd"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",

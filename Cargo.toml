@@ -1,5 +1,5 @@
 [package]
-name = "shard"
+name = "sharrd"
 version = "0.1.0"
 edition = "2021"
 authors = ["Sabir Khan <simplysabir@gmail.com>"]
