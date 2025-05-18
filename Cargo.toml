@@ -1,6 +1,6 @@
 [package]
 name = "sharrd"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2021"
 authors = ["Sabir Khan <simplysabir@gmail.com>"]
 description = "A secure seed phrase manager using Shamir's Secret Sharing"
