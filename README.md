@@ -26,6 +26,9 @@ cargo install --git https://github.com/simplysabir/sharrd
 git clone https://github.com/simplysabir/sharrd
 cd shard
 cargo build --release
+
+# or install from cargo directly
+cargo install sharrd
 ```
 
 ## Usage
