@@ -1,5 +1,3 @@
-// src/storage.rs
-
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -9,6 +7,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::config::Config;
 use crate::crypto::{self, EncryptedData, SecretString};
+use crate::mnemonic::{self, MemorableWord};
 use crate::shamir::{self, Share};
 
 /// Type of the seed phrase
@@ -21,6 +20,7 @@ pub enum SeedPhraseType {
     /// Custom length seed phrase
     Custom,
 }
+
 /// Metadata about a stored secret
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SecretMetadata {
@@ -38,6 +38,8 @@ pub struct SecretMetadata {
     pub description: Option<String>,
     /// Whether access to this secret requires admin password
     pub protected: bool,
+    /// Whether this secret uses memorable shares
+    pub memorable_shares: bool,
 }
 
 /// A secret seed phrase that has been split into shares
@@ -150,7 +152,7 @@ impl Storage {
         Ok(secrets)
     }
     
-    /// Create a new secret from a seed phrase
+    /// Create a new secret using traditional Shamir shares
     pub fn create_secret(
         &self,
         name: &str,
@@ -201,6 +203,7 @@ impl Storage {
             created_at: chrono::Utc::now().to_rfc3339(),
             description,
             protected,
+            memorable_shares: false,
         };
         
         // Create stored secret
@@ -231,7 +234,96 @@ impl Storage {
         Ok(())
     }
     
-    /// Access a secret with the given shares
+    /// Create a new secret with memorable words
+    pub fn create_memorable_secret(
+        &self,
+        name: &str,
+        seed_words: Vec<String>,
+        phrase_type: SeedPhraseType,
+        description: Option<String>,
+        protected: bool,
+    ) -> Result<Vec<MemorableWord>> {
+        // Check if secret already exists
+        if self.metadata_path(name).exists() {
+            return Err(anyhow!("Secret with name '{}' already exists", name));
+        }
+        
+        // Validate words
+        if seed_words.is_empty() {
+            return Err(anyhow!("Seed phrase cannot be empty"));
+        }
+        
+        // Join words with spaces and convert to bytes
+        let seed_phrase = seed_words.join(" ");
+        let secret_bytes = seed_phrase.as_bytes();
+        
+        // Fixed values for memorable shares: 3 total, 2 needed
+        let shares = 3;
+        let threshold = 2;
+        
+        // Split the secret using Shamir's Secret Sharing
+        let raw_shares = shamir::split(secret_bytes, shares, threshold, None)?;
+        
+        // Generate memorable words
+        let mut memorable_words = Vec::with_capacity(shares);
+        for (i, share) in raw_shares.iter().enumerate() {
+            let memorable = mnemonic::generate_memorable_word(
+                share.clone(), 
+                i + 1
+            )?;
+            memorable_words.push(memorable);
+        }
+        
+        // Store share data that can verify words later
+        // Encrypted with master password for extra security if needed
+        let master_password = self.get_master_password()?;
+        
+        // Encrypt raw shares for storage (with metadata but without words)
+        let mut encrypted_share_data = Vec::with_capacity(shares);
+        for share in &raw_shares {
+            let share_bytes = bincode::serialize(share)?;
+            let encrypted = crypto::encrypt(&share_bytes, &master_password)?;
+            encrypted_share_data.push(encrypted);
+        }
+        
+        // Create metadata
+        let metadata = SecretMetadata {
+            name: name.to_string(),
+            phrase_type,
+            total_shares: shares,
+            threshold,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            description,
+            protected,
+            memorable_shares: true,
+        };
+        
+        // Create stored secret
+        let stored_secret = StoredSecret {
+            metadata: metadata.clone(),
+            shares: encrypted_share_data,
+        };
+        
+        // Create directory structure
+        let secret_dir = self.secret_dir(name);
+        fs::create_dir_all(&secret_dir)?;
+        
+        // Write metadata
+        let metadata_json = serde_json::to_string_pretty(&metadata)?;
+        fs::write(self.metadata_path(name), metadata_json)?;
+        
+        // Write encrypted shares as JSON
+        let stored_secret_json = serde_json::to_string_pretty(&stored_secret)?;
+        fs::write(secret_dir.join("shares.json"), stored_secret_json)?;
+        
+        // Zero out sensitive data
+        let mut seed_phrase = seed_phrase;
+        seed_phrase.zeroize();
+        
+        Ok(memorable_words)
+    }
+    
+    /// Access a secret with selected shares
     pub fn access_secret(
         &self,
         name: &str,
@@ -246,9 +338,6 @@ impl Storage {
         // Read metadata
         let metadata_json = fs::read_to_string(metadata_path)?;
         let metadata: SecretMetadata = serde_json::from_str(&metadata_json)?;
-        
-        // Get master password
-        let master_password = self.get_master_password()?;
         
         // Check if we have enough shares
         if provided_shares.len() < metadata.threshold {
@@ -272,6 +361,9 @@ impl Storage {
         let stored_secret_json = fs::read_to_string(secret_dir.join("shares.json"))?;
         let stored_secret: StoredSecret = serde_json::from_str(&stored_secret_json)?;
         
+        // Get master password
+        let master_password = self.get_master_password()?;
+        
         // Decrypt and collect shares
         let mut decrypted_shares = Vec::new();
         
@@ -292,6 +384,87 @@ impl Storage {
         
         // Combine shares to recover the original secret
         let recovered_bytes = shamir::combine(&decrypted_shares)?;
+        
+        // Convert bytes back to string
+        let seed_phrase = String::from_utf8(recovered_bytes)
+            .map_err(|_| anyhow!("Failed to decode recovered secret"))?;
+        
+        // Split into words
+        let seed_words = seed_phrase.split_whitespace().map(String::from).collect();
+        
+        Ok(seed_words)
+    }
+    
+    /// Access a memorable secret with provided words
+    pub fn access_memorable_secret(
+        &self,
+        name: &str,
+        words: &[String],
+    ) -> Result<Vec<String>> {
+        // Check if secret exists
+        let metadata_path = self.metadata_path(name);
+        if !metadata_path.exists() {
+            return Err(anyhow!("Secret with name '{}' does not exist", name));
+        }
+        
+        // Read metadata
+        let metadata_json = fs::read_to_string(metadata_path)?;
+        let metadata: SecretMetadata = serde_json::from_str(&metadata_json)?;
+        
+        // Verify this is a memorable share secret
+        if !metadata.memorable_shares {
+            return Err(anyhow!("Secret '{}' is not using memorable words", name));
+        }
+        
+        // Check if we have enough words
+        if words.len() < metadata.threshold {
+            return Err(anyhow!(
+                "Not enough words provided. Need at least {} words, got {}",
+                metadata.threshold,
+                words.len()
+            ));
+        }
+        
+        // Get master password
+        let master_password = self.get_master_password()?;
+        
+        // Read stored shares for verification
+        let secret_dir = self.secret_dir(name);
+        let stored_secret_json = fs::read_to_string(secret_dir.join("shares.json"))?;
+        let stored_secret: StoredSecret = serde_json::from_str(&stored_secret_json)?;
+        
+        // Decrypt shares for verification
+        let mut original_shares = Vec::with_capacity(stored_secret.shares.len());
+        for encrypted in &stored_secret.shares {
+            let share_bytes = crypto::decrypt(encrypted, &master_password)?;
+            let share: Share = bincode::deserialize(&share_bytes)?;
+            original_shares.push(share);
+        }
+        
+        // Try to recover shares from words
+        let mut recovered_shares = Vec::with_capacity(words.len());
+        for word in words {
+            match mnemonic::recover_share_from_word(word, &original_shares) {
+                Ok(share) => {
+                    recovered_shares.push(share);
+                }
+                Err(e) => {
+                    return Err(anyhow!("Invalid word '{}': {}", word, e));
+                }
+            }
+        }
+        
+        // Check if we have enough valid shares
+        if recovered_shares.len() < metadata.threshold {
+            return Err(anyhow!(
+                "Not enough valid words. Need at least {} valid words, got {}",
+                metadata.threshold,
+                recovered_shares.len()
+            ));
+        }
+        
+        // Combine shares to recover the original secret
+        let recovered_bytes = shamir::combine(&recovered_shares[0..metadata.threshold])?;
         
         // Convert bytes back to string
         let seed_phrase = String::from_utf8(recovered_bytes)
@@ -368,7 +541,7 @@ impl Storage {
         // Get master password
         let master_password = self.get_master_password()?;
         
-        // Decrypt first share to get the share IDs
+        // Decrypt shares to get information
         let mut share_infos = Vec::new();
         
         for (i, encrypted) in stored_secret.shares.iter().enumerate() {
@@ -433,6 +606,44 @@ mod tests {
         
         // Access the secret with shares
         let recovered = storage.access_secret("test-secret", &[1, 2]).unwrap();
+        assert_eq!(recovered, seed_words);
+    }
+    
+    #[test]
+    fn test_memorable_secret() {
+        let config = create_test_config();
+        let storage = Storage::new(config);
+        
+        // Create test seed phrase
+        let seed_words = vec![
+            "abandon".to_string(), "ability".to_string(), "able".to_string(),
+            "about".to_string(), "above".to_string(), "absent".to_string(),
+            "absorb".to_string(), "abstract".to_string(), "absurd".to_string(),
+            "abuse".to_string(), "access".to_string(), "accident".to_string(),
+        ];
+        
+        // Create a new memorable secret
+        let memorable_words = storage.create_memorable_secret(
+            "test-memorable",
+            seed_words.clone(),
+            SeedPhraseType::Words12,
+            Some("Test memorable secret".to_string()),
+            false,
+        ).unwrap();
+        
+        assert_eq!(memorable_words.len(), 3);
+        
+        // Get the memorable words
+        let word_strings: Vec<String> = memorable_words.iter()
+            .map(|mw| mw.word.clone())
+            .collect();
+        
+        // Access with 2 of the 3 words
+        let recovered = storage.access_memorable_secret(
+            "test-memorable", 
+            &word_strings[0..2].to_vec()
+        ).unwrap();
+        
         assert_eq!(recovered, seed_words);
     }
     

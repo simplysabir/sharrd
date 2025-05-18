@@ -110,31 +110,9 @@ impl Config {
             PathBuf::from(storage_dir)
         };
         
-        // Get default shares
-        let default_shares: usize = Input::new()
-            .with_prompt("Default number of shares to create (2-10)")
-            .default(3)
-            .validate_with(|input: &usize| {
-                if *input >= 2 && *input <= 10 {
-                    Ok(())
-                } else {
-                    Err("Please enter a number between 2 and 10")
-                }
-            })
-            .interact_text()?;
-        
-        // Get default threshold
-        let default_threshold: usize = Input::new()
-            .with_prompt(format!("Default threshold (2-{})", default_shares))
-            .default(2)
-            .validate_with(move |input: &usize| {
-                if *input >= 2 && *input <= default_shares {
-                    Ok(())
-                } else {
-                    Err(format!("Please enter a number between 2 and {}", default_shares))
-                }
-            })
-            .interact_text()?;
+        // Default values for memorable shares (fixed as 3 shares, threshold of 2)
+        let default_shares = 3;
+        let default_threshold = 2;
         
         // Use password protection?
         let use_password = Confirm::new()

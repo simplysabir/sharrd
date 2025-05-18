@@ -1,5 +1,3 @@
-// src/crypto.rs
-
 use aes_gcm::{
     aead::{Aead, KeyInit, OsRng},
     Aes256Gcm, Nonce,
@@ -9,7 +7,7 @@ use argon2::{Argon2, PasswordHasher};
 use argon2::password_hash::SaltString;
 use base64::{Engine as _, engine::general_purpose};
 use serde::{Deserialize, Serialize};
-use zeroize::{Zeroize, ZeroizeOnDrop };
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Encrypted data with metadata required for decryption
 #[derive(Debug, Serialize, Deserialize, Clone)]

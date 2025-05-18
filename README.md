@@ -4,23 +4,17 @@ A secure tool for managing cryptocurrency seed phrases using Shamir's Secret Sha
 
 ## Overview
 
-Shard is a command-line tool that securely splits your cryptocurrency wallet seed phrases (12 or 24 words) into multiple shares using Shamir's Secret Sharing (SSS). This allows you to:
+Sharrd is a command-line tool that securely splits your cryptocurrency wallet seed phrases (12 or 24 words) into three memorable words using Shamir's Secret Sharing (SSS). The key advantage is that you only need to remember any 2 of these 3 words to recover your complete seed phrase.
 
-- Split your seed phrase into N shares
-- Define a threshold K (where K ≤ N) of shares needed to recover the secret
-- Distribute shares across different physical locations or among trusted individuals
-- Recover your seed phrase with ANY K shares, even if some are lost
-
-This approach is significantly more secure than simply making copies of your seed phrase or splitting it into halves, as each individual share reveals nothing about the original secret.
+This approach is significantly more secure than simply making copies of your seed phrase or splitting it into halves, as each individual word reveals nothing about the original secret.
 
 ## Features
 
-- **Secure Seed Phrase Management**: Split and reconstruct 12-word, 24-word, or custom length seed phrases
-- **Flexible Sharing**: Create multiple shares with configurable thresholds
-- **Encrypted Storage**: Optional password protection of shares storage
+- **Secure Seed Phrase Management**: Split your seed phrase into 3 memorable words
+- **2-of-3 Threshold**: Recover your secret with any 2 of the 3 words
 - **User-Friendly CLI**: Simple commands with guided input for all operations
-- **Zero Knowledge**: Individual shares reveal nothing about the original secret
-- **Deletion Protection**: Option to require admin password for deleting secrets
+- **Zero Knowledge**: Individual words reveal nothing about the original secret
+- **Deletion Protection**: Option to require password for deleting secrets
 
 ## Installation
 
@@ -38,7 +32,7 @@ cargo build --release
 
 ### First-time Setup
 
-The first time you run Sharrd, it will guide you through setting up your configuration:
+The first time you run Shard, it will guide you through setting up your configuration:
 
 ```bash
 sharrd list
@@ -55,9 +49,10 @@ sharrd create
 This will guide you through:
 1. Naming your secret
 2. Selecting the seed phrase type (12-word, 24-word, or custom)
-3. Configuring number of shares and threshold
-4. Entering your seed phrase words one by one
-5. Adding optional description and protection settings
+3. Entering your seed phrase words one by one
+4. Adding optional description and protection settings
+
+You'll then be presented with 3 memorable words. Remember any 2 of these words to recover your seed phrase.
 
 ### Listing Secrets
 
@@ -77,7 +72,7 @@ To recover a seed phrase:
 sharrd access <secret_name>
 ```
 
-You'll be prompted to select which shares you want to use (you need at least the threshold number).
+For secrets created with memorable words, you'll be prompted to enter the words you remember (you need at least 2 of the 3 words).
 
 ### Deleting a Secret
 
@@ -99,19 +94,20 @@ sharrd export <secret_name>
 
 ## Security Considerations
 
-- The master password is used to encrypt the shares locally - make sure to use a strong password
-- Individual shares reveal no information about the original secret
+- The master password is used only to encrypt metadata
+- Individual words reveal no information about the original secret
 - All sensitive data is wiped from memory after use
-- Consider distributing shares across different physical locations
+- Consider memorizing the 3 words and storing them in separate secure locations
 - Test recovery before relying on this system for critical assets
 
 ## Technical Details
 
 - Written in Rust for memory safety and performance
 - Uses GF(256) finite field arithmetic for Shamir's Secret Sharing
-- AES-256-GCM for encrypting stored shares
+- AES-256-GCM for encrypting stored metadata
 - Argon2id for key derivation from passwords
 - Zero-copy, memory zeroing for sensitive data
+- Blake3 for generating deterministic memorable words from shares
 
 ## License
 

@@ -1,6 +1,6 @@
 [package]
 name = "sharrd"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 authors = ["Sabir Khan <simplysabir@gmail.com>"]
 description = "A secure seed phrase manager using Shamir's Secret Sharing"
@@ -26,6 +26,7 @@ anyhow = "1.0"
 aes-gcm = "0.10.2"
 argon2 = "0.5"
 zeroize = { version = "1.5", features = ["derive"] }
+blake3 = "1.5"
 
 # Storage and config
 serde = { version = "1.0", features = ["derive"] }

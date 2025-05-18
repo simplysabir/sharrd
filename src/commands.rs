@@ -7,6 +7,7 @@ use zeroize::Zeroize;
 
 use crate::config::Config;
 use crate::crypto::SecretString;
+use crate::mnemonic::MemorableWord;
 use crate::storage::{SeedPhraseType, Storage};
 
 /// Execute the init command
@@ -16,13 +17,13 @@ pub fn init() -> Result<()> {
     Ok(())
 }
 
-/// Execute the create command
+/// Execute the create command (with memorable words)
 pub fn create(config: Config) -> Result<()> {
     let term = Term::stdout();
     term.clear_screen()?;
     
-    println!("{}", style("Create a New Seed Phrase Secret").bold().green());
-    println!("This will securely split your seed phrase using Shamir's Secret Sharing\n");
+    println!("{}", style("Create a New Secret").bold().green());
+    println!("This will securely split your seed phrase into 3 memorable words\n");
     
     // Get master password if needed
     let mut storage = Storage::new(config.clone());
@@ -47,7 +48,7 @@ pub fn create(config: Config) -> Result<()> {
             if input.contains('/') || input.contains('\\') {
                 return Err("Name cannot contain path separators");
             }
-
+            
             // Check if name already exists
             match storage.list_secrets() {
                 Ok(existing) => {
@@ -59,7 +60,7 @@ pub fn create(config: Config) -> Result<()> {
                     return Err("Failed to check existing secrets");
                 }
             }
-
+            
             Ok(())
         })
         .interact_text()?;
@@ -96,31 +97,6 @@ pub fn create(config: Config) -> Result<()> {
         }
         _ => unreachable!(),
     };
-    
-    // Get shares and threshold
-    let shares: usize = Input::new()
-        .with_prompt("Number of shares to create")
-        .default(config.default_shares)
-        .validate_with(|input: &usize| {
-            if *input >= 2 && *input <= 10 {
-                Ok(())
-            } else {
-                Err("Please enter a number between 2 and 10")
-            }
-        })
-        .interact()?;
-    
-    let threshold: usize = Input::new()
-        .with_prompt(format!("Threshold (minimum shares needed to recover, 2-{})", shares))
-        .default(std::cmp::min(config.default_threshold, shares))
-        .validate_with(move |input: &usize| {
-            if *input >= 2 && *input <= shares {
-                Ok(())
-            } else {
-                Err(format!("Please enter a number between 2 and {}", shares))
-            }
-        })
-        .interact()?;
     
     // Get description (optional)
     let description: String = Input::new()
@@ -161,15 +137,13 @@ pub fn create(config: Config) -> Result<()> {
             .unwrap()
             .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
     );
-    pb.set_message("Creating secret shares...");
+    pb.set_message("Creating memorable words...");
     
-    // Create the secret
-    storage.create_secret(
+    // Create the secret with memorable words
+    let memorable_words = storage.create_memorable_secret(
         &name,
         seed_words.clone(),
         phrase_type.0,
-        shares,
-        threshold,
         description,
         protected,
     )?;
@@ -181,11 +155,29 @@ pub fn create(config: Config) -> Result<()> {
     
     pb.finish_with_message("Secret created successfully!");
     
-    println!("\n{}", style("Secret created successfully!").green().bold());
-    println!("  Name: {}", name);
-    println!("  Shares: {}", shares);
-    println!("  Threshold: {}", threshold);
-    println!("\nRemember that you'll need at least {} shares to recover your secret.", threshold);
+    // Display the memorable words
+    println!("\n{}", style("Your Memorable Words:").green().bold());
+    println!("{}", style("─".repeat(50)).dim());
+    println!("Remember these three words. You'll need any 2 to recover your secret.");
+    println!("{}", style("─".repeat(50)).dim());
+    
+    for memorable in &memorable_words {
+        println!("Word #{}: {}", memorable.index, style(&memorable.word).bold());
+    }
+    
+    println!("{}", style("─".repeat(50)).dim());
+    println!("\n{}", style("IMPORTANT:").yellow().bold());
+    println!(" • Remember these 3 words");
+    println!(" • You will need ANY 2 of them to recover your seed phrase");
+    println!(" • They are not stored in plain text - you must remember them!");
+    
+    // Wait for user confirmation
+    Confirm::new()
+        .with_prompt("I have memorized or written down my words")
+        .default(true)
+        .interact()?;
+    
+    term.clear_screen()?;
     
     Ok(())
 }
@@ -222,6 +214,11 @@ pub fn list(config: Config) -> Result<()> {
         
         println!("   Created: {}", secret.created_at.split('T').next().unwrap_or(""));
         
+        // Show memorable indicator if applicable
+        if secret.memorable_shares {
+            println!("   {}", style("🧠 Memorable words").blue());
+        }
+        
         // Show lock icon if protected
         if secret.protected {
             println!("   {}", style("🔒 Protected").yellow());
@@ -237,7 +234,7 @@ pub fn list(config: Config) -> Result<()> {
     Ok(())
 }
 
-/// Execute the access command
+/// Execute the access command (supporting memorable words)
 pub fn access(config: Config, name: &str) -> Result<()> {
     let term = Term::stdout();
     
@@ -261,58 +258,120 @@ pub fn access(config: Config, name: &str) -> Result<()> {
     
     let secret = secret.unwrap();
     
-    // Ask which shares to use
-    println!("\n{}", style("Access Secret").bold().green());
-    println!("Secret: {}", style(&secret.name).bold());
-    println!("You need at least {} shares to recover this secret.", secret.threshold);
-    
-    // Create items for share selection (1 to total_shares)
-    let share_items: Vec<String> = (1..=secret.total_shares)
-        .map(|i| format!("Share {}", i))
-        .collect();
-    
-    let selected = MultiSelect::new()
-        .with_prompt("Select which shares to use (select at least 2 shares)")
-        .items(&share_items)
-        .interact()?;
+    // Check if this is a memorable secret or traditional secret
+    if secret.memorable_shares {
+        // Handle memorable secret (with words)
+        println!("\n{}", style("Access Secret With Words").bold().green());
+        println!("Secret: {}", style(&secret.name).bold());
+        println!("You need at least 2 of the 3 memorable words to recover this secret.");
+        
+        // Collect words from user
+        let mut words = Vec::new();
+        let mut continue_adding = true;
+        
+        while continue_adding && words.len() < 3 {
+            let word: String = Input::new()
+                .with_prompt(format!("Enter word #{}", words.len() + 1))
+                .interact_text()?;
+            
+            if !word.is_empty() {
+                words.push(word);
+            }
+            
+            // Check if we have enough words
+            if words.len() >= 2 {
+                // Ask if user wants to add more, only if we don't have all 3 yet
+                if words.len() < 3 {
+                    continue_adding = Confirm::new()
+                        .with_prompt(format!("You have entered {} words (minimum needed is 2). Add another?", 
+                                          words.len()))
+                        .default(false)
+                        .interact()?;
+                } else {
+                    continue_adding = false; // We have all 3 words
+                }
+            }
+        }
+        
+        // Show progress bar while recovering secret
+        let pb = ProgressBar::new_spinner();
+        pb.enable_steady_tick(Duration::from_millis(100));
+        pb.set_style(
+            ProgressStyle::with_template("{spinner:.green} {msg}")
+                .unwrap()
+                .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
+        );
+        pb.set_message("Recovering secret...");
+        
+        // Recover the secret
+        let recovered_words = storage.access_memorable_secret(&secret.name, &words)?;
+        
+        pb.finish_and_clear();
+        
+        // Display the recovered seed phrase
+        display_recovered_seed_phrase(term, &secret.name, recovered_words)?;
+    } else {
+        // Traditional Shamir share access
+        println!("\n{}", style("Access Secret").bold().green());
+        println!("Secret: {}", style(&secret.name).bold());
+        println!("You need at least {} shares to recover this secret.", secret.threshold);
+        
+        // Create items for share selection (1 to total_shares)
+        let share_items: Vec<String> = (1..=secret.total_shares)
+            .map(|i| format!("Share {}", i))
+            .collect();
+        
+        let selected = MultiSelect::new()
+            .with_prompt("Select which shares to use (select at least 2 shares)")
+            .items(&share_items)
+            .interact()?;
 
-    if selected.len() < secret.threshold {
-        return Err(anyhow!(
-            "You must select at least {} shares to recover the secret.",
-            secret.threshold
-        ));
+        if selected.len() < secret.threshold {
+            return Err(anyhow!(
+                "You must select at least {} shares to recover the secret.",
+                secret.threshold
+            ));
+        }
+        if selected.len() > secret.total_shares {
+            return Err(anyhow!(
+                "You cannot select more than {} shares.",
+                secret.total_shares
+            ));
+        }
+        
+        // Convert selected indices to share IDs (1-based)
+        let share_ids: Vec<usize> = selected.iter().map(|&idx| idx + 1).collect();
+        
+        // Show progress bar while recovering secret
+        let pb = ProgressBar::new_spinner();
+        pb.enable_steady_tick(Duration::from_millis(100));
+        pb.set_style(
+            ProgressStyle::with_template("{spinner:.green} {msg}")
+                .unwrap()
+                .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
+        );
+        pb.set_message("Recovering secret...");
+        
+        // Recover the secret
+        let recovered_words = storage.access_secret(&secret.name, &share_ids)?;
+        
+        pb.finish_and_clear();
+        
+        // Display the recovered seed phrase
+        display_recovered_seed_phrase(term, &secret.name, recovered_words)?;
     }
-    if selected.len() > secret.total_shares {
-        return Err(anyhow!(
-            "You cannot select more than {} shares.",
-            secret.total_shares
-        ));
-    }
     
-    // Convert selected indices to share IDs (1-based)
-    let share_ids: Vec<usize> = selected.iter().map(|&idx| idx + 1).collect();
-    
-    // Show progress bar while recovering secret
-    let pb = ProgressBar::new_spinner();
-    pb.enable_steady_tick(Duration::from_millis(100));
-    pb.set_style(
-        ProgressStyle::with_template("{spinner:.green} {msg}")
-            .unwrap()
-            .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
-    );
-    pb.set_message("Recovering secret...");
-    
-    // Recover the secret
-    let recovered_words = storage.access_secret(&secret.name, &share_ids)?;
-    
-    pb.finish_and_clear();
-    
+    Ok(())
+}
+
+/// Helper function to display a recovered seed phrase
+fn display_recovered_seed_phrase(term: Term, secret_name: &str, recovered_words: Vec<String>) -> Result<()> {
     // Clear screen for security
     term.clear_screen()?;
     
     println!("{}", style("🔓 Secret Recovered Successfully").green().bold());
     println!("{}", style("─".repeat(50)).dim());
-    println!("Secret: {}", style(&secret.name).bold());
+    println!("Secret: {}", style(secret_name).bold());
     println!("\n{}", style("Seed Phrase:").bold());
     
     // Show recovered words with numbering
@@ -444,21 +503,27 @@ pub fn export(config: Config, name: &str) -> Result<()> {
     println!("\n{}", style("Export Shares").bold().green());
     println!("Secret: {}", style(&secret.name).bold());
     
-    // Get share information
-    let share_infos = storage.export_shares(name)?;
-    
-    println!("\n{}", style("Share Information:").bold());
-    println!("{}", style("─".repeat(50)).dim());
-    
-    for info in &share_infos {
-        println!("Share ID: {}", info.id);
-        println!("Total Shares: {}", info.total);
-        println!("Threshold: {}", info.threshold);
+    if secret.memorable_shares {
+        println!("\n{}", style("This secret uses memorable words.").blue());
+        println!("There are 3 words associated with this secret, and you need any 2 to recover it.");
+        println!("The actual words cannot be exported for security reasons - you must remember them.");
+    } else {
+        // Get share information for standard shares
+        let share_infos = storage.export_shares(name)?;
+        
+        println!("\n{}", style("Share Information:").bold());
         println!("{}", style("─".repeat(50)).dim());
+        
+        for info in &share_infos {
+            println!("Share ID: {}", info.id);
+            println!("Total Shares: {}", info.total);
+            println!("Threshold: {}", info.threshold);
+            println!("{}", style("─".repeat(50)).dim());
+        }
+        
+        println!("\nThis secret has {} shares, and you need at least {} to recover it.", 
+                secret.total_shares, secret.threshold);
     }
-    
-    println!("\nThis secret has {} shares, and you need at least {} to recover it.", 
-             secret.total_shares, secret.threshold);
     
     Ok(())
 }

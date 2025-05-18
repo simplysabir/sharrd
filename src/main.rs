@@ -1,6 +1,7 @@
 mod commands;
 mod config;
 mod crypto;
+mod mnemonic;
 mod shamir;
 mod storage;
 
