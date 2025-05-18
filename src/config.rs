@@ -20,7 +20,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         // Default to storing in user's config directory
-        let proj_dirs = ProjectDirs::from("com", "shard", "shard")
+        let proj_dirs = ProjectDirs::from("com", "sharrd", "sharrd")
             .expect("Failed to determine configuration directory");
         
         let storage_dir = proj_dirs.data_dir().to_path_buf();
